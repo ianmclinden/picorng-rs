@@ -1,0 +1,17 @@
+[package]
+name = "picorng"
+description = "CLI for the PICoRNG - USB random number generator"
+version = "0.1.0"
+authors = ["Ian McLinden", "ReimuNotMoe <reimu@sudomaker.com>"]
+homepage = "https://github.com/ianmclinden/picorng-rs"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.4.8", features = ["derive", "cargo"] }
+ctrlc = "3.4.1"
+tiny_ecdh = { path = "./tiny_ecdh" }
+expanduser = "1.2.2"
+nix = { version = "0.27.1", features = ["user"] }
+rusb = "0.9.3"
+log = "0.4.20"
+simplelog = { version = "0.12.1", default-features = false }

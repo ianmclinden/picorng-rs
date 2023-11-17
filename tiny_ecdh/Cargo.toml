@@ -1,0 +1,16 @@
+[package]
+name = "tiny_ecdh"
+description = "PICoRNG Utility"
+version = "0.1.0"
+authors = ["Ian McLinden", "ReimuNotMoe <reimu@sudomaker.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+hex = "0.4.3"
+rand = "0.8.5"
+
+[build-dependencies]
+bindgen = "0.69.1"
+cc = "1.0.83"
