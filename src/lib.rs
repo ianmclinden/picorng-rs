@@ -99,6 +99,16 @@ impl PICoRNGClient {
     const DESCRIPTOR_INDEX: u8 = 1;
     const INTERFACE_NUM: u8 = 0;
 
+    /// Creates a new `PICoRNGClient`
+    ///
+    /// # Arguments
+    /// * `cfg_dir` - A [`String`] path to a configuration directory. Paths with `~` will be automatically expanded.
+    /// * `dev_number` - The USB index of the device to bind.
+    /// * `timeout` - USB connection timeout for sending and receiving packets.
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`] if the config directory is an invalid path,
+    /// or if the selected device number is not found.
     pub fn new(cfg_dir: String, dev_number: usize, timeout: u64) -> Result<Self> {
         Ok(Self {
             devices: Self::find_devices()?,
@@ -147,7 +157,10 @@ impl PICoRNGClient {
         Ok(rx_packet)
     }
 
-    /// List all `PICoRNG`` devices with debug information
+    /// List all `PICoRNG` devices with debug information
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`] if errors occur reading USB device configuration
     pub fn list_devices(&self) -> Result<()> {
         for (i, device) in self.devices.iter().enumerate() {
             let path = match device.port_numbers() {
@@ -159,7 +172,7 @@ impl PICoRNGClient {
                             .collect::<Vec<String>>()
                             .join(".")
                 }
-                Err(_) => "".to_string(),
+                Err(_) => String::new(),
             };
 
             let descriptor = device
@@ -176,6 +189,9 @@ impl PICoRNGClient {
     }
 
     /// Print info about the currently selected device
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`] if there is an issue communicating with the selected device
     pub fn print_info(&self) -> Result<()> {
         match self.send_and_receive(PICoPacket::InfoRequest, self.usb_timeout)? {
             PICoPacket::InfoResponse { version, status } => {
@@ -192,6 +208,11 @@ impl PICoRNGClient {
     }
 
     /// Generate and install an ECDH keypair onto the selected device
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`] if the device returns a mismatched key,
+    /// if there is an issue communicating with the selected device,
+    /// or if there is an error writing the public key to the configuration directory
     pub fn pair(&self) -> Result<()> {
         log::trace!("Generating sect163k1 keypair");
         let key = sect163k1::Key::generate();
@@ -249,6 +270,11 @@ impl PICoRNGClient {
     }
 
     /// Verify that the configured device generates a valid shared secret
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`]  if there is an error reading public keys from
+    /// the configuration directory, if there are no matching public keys for the device,
+    /// or if there is an issue communicating with the selected device
     pub fn verify(&self) -> Result<()> {
         log::trace!("Generating sect163k1 challenge keypair");
         let key = sect163k1::Key::generate();
@@ -296,19 +322,23 @@ impl PICoRNGClient {
                     ecc_shared_secret.to_hex_string()
                 );
                 // 6. Check if there are matches
-                match ecc_shared_secrets.contains(&ecc_shared_secret) {
-                    true => Ok(println!("Success")),
-                    false => Err(ClientError::FailedVerification),
+                if ecc_shared_secrets.contains(&ecc_shared_secret) {
+                    Ok(println!("Success"))
+                } else {
+                    Err(ClientError::FailedVerification)
                 }
             }
             _ => Err(ClientError::BadResponse),
         }
     }
 
-    /// Get blocks of random data from the device, and output to [std::io::stdout()].
+    /// Get blocks of random data from the device, and output to [`std::io::stdout()`].
     ///
-    /// # Aguments
+    /// # Arguments
     /// * `blocks` - If [Some(size)], then get `size` blocks, otherwise fetch until interrupted
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`] if there is an issue communicating with the device
     pub fn get_random_blocks(&self, blocks: Option<usize>) -> Result<()> {
         let mut sent: usize = 0;
         let running = Arc::new(AtomicBool::new(true));
@@ -338,8 +368,11 @@ impl PICoRNGClient {
 
     /// Sample and analyze the quality of random blocks from the configured device
     ///
-    /// # Aguments
+    /// # Arguments
     /// * `blocks` - The number of blocks to be analyzed
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`] if there is an issue communicating with the device
     pub fn check_quality(&self, blocks: usize) -> Result<()> {
         println!(
             "Gathering {} blocks ({} bytes) of random data ...\n",
@@ -401,8 +434,12 @@ impl PICoRNGClient {
 
     /// Seed `/dev/urandom` with data from the configured device
     ///
-    /// # Aguments
+    /// # Arguments
     /// * `skip_verify` - If `true` then device verification will be skipped
+    ///
+    /// # Errors
+    /// Returns a [`ClientError`] if there is an issue communicating with the device,
+    /// or if there is an issue writing to `/dev/urandom`
     pub fn feed_rngd(&self, skip_verify: bool) -> Result<()> {
         if !skip_verify {
             log::info!("Verifying device");

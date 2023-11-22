@@ -17,6 +17,8 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+#![allow(clippy::cast_precision_loss)]
+
 use std::{collections::HashMap, f64::consts::PI};
 
 #[derive(Default, Clone)]
@@ -30,10 +32,10 @@ impl Entropy {
     }
 
     pub fn add_from_slice(&mut self, data: &[u8]) {
-        self.data.extend_from_slice(data)
+        self.data.extend_from_slice(data);
     }
 
-    pub fn generate_report(&self) -> EntropyReport {
+    pub fn generate_report(&self) -> Report {
         let distribution = self
             .data
             .iter()
@@ -45,11 +47,11 @@ impl Entropy {
         let bytes = self.data.len();
         let shannon = self.shannon_entropy(&distribution);
         let chi_squared = self.chi_squared(&distribution);
-        let mean = self.data.iter().map(|i| *i as f64).sum::<f64>() / self.data.len() as f64;
+        let mean = self.data.iter().map(|i| f64::from(*i)).sum::<f64>() / self.data.len() as f64;
         let monte_carlo = self.monte_carlo();
         let monte_carlo_error = (PI - monte_carlo).abs() / PI;
 
-        EntropyReport {
+        Report {
             bytes,
             shannon,
             chi_squared,
@@ -67,7 +69,7 @@ impl Entropy {
             .values()
             .filter(|&&v| v != 0)
             .fold(0.0f64, |acc, v| {
-                let p: f64 = (*v as f64) / len;
+                let p: f64 = f64::from(*v) / len;
                 acc - p * p.log(2.0)
             })
     }
@@ -81,8 +83,8 @@ impl Entropy {
             .collect();
 
         let count = pairs.iter().fold(0u32, |acc, (x, y)| {
-            let x: f64 = *x as f64 / 255.0;
-            let y: f64 = *y as f64 / 255.0;
+            let x: f64 = f64::from(*x) / 255.0;
+            let y: f64 = f64::from(*y) / 255.0;
             let p: f64 = x * x + y * y;
             if p <= 1.0 {
                 acc + 1
@@ -90,21 +92,21 @@ impl Entropy {
                 acc
             }
         });
-        (count as f64) * 4.0 / (pairs.len() as f64)
+        f64::from(count) * 4.0 / (pairs.len() as f64)
     }
 
     fn chi_squared(&self, distribution: &HashMap<u8, u32>) -> f64 {
-        let expected = self.data.len() as f64 / u8::MAX as f64;
+        let expected = self.data.len() as f64 / f64::from(u8::MAX);
 
         distribution
             .values()
-            .map(|o| (*o as f64 - expected).powf(2.0) / expected)
+            .map(|o| (f64::from(*o) - expected).powf(2.0) / expected)
             .sum()
     }
 }
 
 #[derive(Copy, Clone)]
-pub struct EntropyReport {
+pub struct Report {
     bytes: usize,
     shannon: f64,
     chi_squared: f64,
@@ -114,7 +116,7 @@ pub struct EntropyReport {
     serial_correlation: f64,
 }
 
-impl EntropyReport {
+impl Report {
     pub fn bytes(&self) -> usize {
         self.bytes
     }

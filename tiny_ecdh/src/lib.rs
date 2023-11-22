@@ -42,11 +42,12 @@
 //! assert_eq!(shared_1_2, shared_2_1);
 //! ```
 
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(dead_code)]
-
+#[allow(non_upper_case_globals)]
+#[allow(non_camel_case_types)]
+#[allow(non_snake_case)]
+#[allow(clippy::unreadable_literal)]
+#[allow(clippy::used_underscore_binding)]
+#[allow(dead_code)]
 mod bindings {
     // scope the base library to this crate
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -61,13 +62,18 @@ pub enum Error {
 
     #[error("could not parse key from vec")]
     TryFromVecError,
+
+    #[error("underlying library illegally mutated an object")]
+    IllegalMut,
 }
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 // TODO : conditional compilation for other ec sizes
 pub mod sect163k1 {
     use crate::{
         bindings::{ECC_PRV_KEY_SIZE, ECC_PUB_KEY_SIZE},
-        Error,
+        Error, Result,
     };
 
     use rand::RngCore;
@@ -79,55 +85,84 @@ pub mod sect163k1 {
     }
 
     impl PrivKey {
-        /// Generate a new [PrivKey]
+        /// Generate a new [`PrivKey`]
+        #[must_use]
         pub fn generate() -> Self {
             let mut data = [0u8; ECC_PRV_KEY_SIZE as usize];
             rand::thread_rng().fill_bytes(&mut data);
 
             // Generate mutates the privkey, so make sure it conforms
-            let mut _pubkey = PubKey::new();
+            let mut pubkey = PubKey::new();
             unsafe {
-                crate::bindings::ecdh_generate_keys(_pubkey.data.as_mut_ptr(), data.as_mut_ptr());
+                crate::bindings::ecdh_generate_keys(pubkey.data.as_mut_ptr(), data.as_mut_ptr());
             }
 
             Self { data }
         }
 
-        /// Get the expected size of the [PrivKey] in bytes
+        /// Get the expected size of the [`PrivKey`] in bytes
+        #[must_use]
         pub fn size() -> usize {
             ECC_PRV_KEY_SIZE as usize
         }
 
-        /// Get the actual length of the [PrivKey] in bytes
+        /// Get the actual length of the [`PrivKey`] in bytes
+        #[must_use]
         pub fn len(&self) -> usize {
             self.data.len()
         }
 
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        #[must_use]
         pub fn to_hex_string(&self) -> String {
             hex::encode(self.data)
         }
 
+        #[must_use]
         pub fn as_bytes(&self) -> &[u8] {
             &self.data
         }
 
-        /// Generate a new [PubKey] derived from a [PrivKey]
-        pub fn generate_pubkey(&self) -> PubKey {
+        /// Try to generate a new [`PubKey`] derived from a [`PrivKey`]
+        ///
+        /// # Errors
+        /// Returns an [`Error`] if the underlying library illegally mutates
+        /// the base [`PrivKey`]. This should not happen if the key has been correctly
+        /// initialized
+        pub fn try_generate_pubkey(&self) -> Result<PubKey> {
             let mut pubkey = PubKey::new();
 
-            let mut privkey_copy = self.data.clone();
+            let mut privkey_copy = self.data;
             unsafe {
                 crate::bindings::ecdh_generate_keys(
                     pubkey.data.as_mut_ptr(),
                     privkey_copy.as_mut_ptr(),
                 );
             }
-            // base lib should not mutate this if it's initialized correctly
-            assert_eq!(privkey_copy, self.data);
-            pubkey
+            if privkey_copy == self.data {
+                Ok(pubkey)
+            } else {
+                Err(Error::IllegalMut)
+            }
         }
 
-        /// Calcualte a Diffie-Hellman shared secret from this [PrivKey] and a given [PubKey]
+        /// Generate a new [`PubKey`] derived from a [`PrivKey`]
+        ///
+        /// # Panics
+        /// Panics if the underlying library illegally mutates
+        /// the base [`PrivKey`]. This should not happen if the key has been correctly
+        /// initialized
+        #[must_use]
+        pub fn generate_pubkey(&self) -> PubKey {
+            self.try_generate_pubkey().unwrap()
+        }
+
+        /// Calculate a Diffie-Hellman shared secret from this [`PrivKey`] and a given [`PubKey`]
+        #[must_use]
         pub fn diffie_hellman(&self, public_key: &PubKey) -> SharedSecret {
             let mut ecc_shared_secret = SharedSecret::new();
             unsafe {
@@ -144,7 +179,7 @@ pub mod sect163k1 {
     impl TryFrom<&[u8]> for PrivKey {
         type Error = Error;
 
-        fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        fn try_from(value: &[u8]) -> Result<Self> {
             Ok(Self {
                 data: value.try_into()?,
             })
@@ -154,7 +189,7 @@ pub mod sect163k1 {
     impl TryFrom<Vec<u8>> for PrivKey {
         type Error = Error;
 
-        fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        fn try_from(value: Vec<u8>) -> Result<Self> {
             Ok(Self {
                 data: value.try_into().map_err(|_| Error::TryFromVecError)?,
             })
@@ -174,20 +209,29 @@ pub mod sect163k1 {
             }
         }
 
-        /// Get the expected size of the [PubKey] in bytes
+        /// Get the expected size of the [`PubKey`] in bytes
+        #[must_use]
         pub fn size() -> usize {
             ECC_PUB_KEY_SIZE as usize
         }
 
-        /// Get the actual length of the [PubKey] in bytes
+        /// Get the actual length of the [`PubKey`] in bytes
+        #[must_use]
         pub fn len(&self) -> usize {
             self.data.len()
         }
 
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        #[must_use]
         pub fn to_hex_string(&self) -> String {
             hex::encode(self.data)
         }
 
+        #[must_use]
         pub fn as_bytes(&self) -> &[u8] {
             &self.data
         }
@@ -196,7 +240,7 @@ pub mod sect163k1 {
     impl TryFrom<&[u8]> for PubKey {
         type Error = Error;
 
-        fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        fn try_from(value: &[u8]) -> Result<Self> {
             Ok(Self {
                 data: value.try_into()?,
             })
@@ -206,7 +250,7 @@ pub mod sect163k1 {
     impl TryFrom<Vec<u8>> for PubKey {
         type Error = Error;
 
-        fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        fn try_from(value: Vec<u8>) -> Result<Self> {
             Ok(Self {
                 data: value.try_into().map_err(|_| Error::TryFromVecError)?,
             })
@@ -216,7 +260,7 @@ pub mod sect163k1 {
     /// An ECDH Shared Secret
     pub type SharedSecret = PubKey;
 
-    /// An ECC KeyPair
+    /// An ECC Key Pair
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct Key {
         pub(crate) privkey: PrivKey,
@@ -224,20 +268,35 @@ pub mod sect163k1 {
     }
 
     impl Key {
-        /// Generate a new ECC [Key], with a randomly generated [PrivKey] and a derived [PubKey]
-        pub fn generate() -> Self {
+        /// .
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if an error generating the contained keys occurs
+        pub fn try_generate() -> Result<Self> {
             let privkey = PrivKey::generate();
-            let pubkey = privkey.generate_pubkey();
+            let pubkey = privkey.try_generate_pubkey()?;
 
-            Self { privkey, pubkey }
+            Ok(Self { privkey, pubkey })
         }
 
-        /// Get this key's [PrivKey]
+        /// Generate a new ECC [`Key`], with a randomly generated [`PrivKey`] and a derived [`PubKey`]
+        ///
+        /// # Panics
+        /// Panics if there is an error generating the contained keys
+        #[must_use]
+        pub fn generate() -> Self {
+            Self::try_generate().unwrap()
+        }
+
+        /// Get this key's [`PrivKey`]
+        #[must_use]
         pub fn private_key(&self) -> PrivKey {
             self.privkey
         }
 
-        /// Get this key's [PubKey]
+        /// Get this key's [`PubKey`]
+        #[must_use]
         pub fn public_key(&self) -> PubKey {
             self.pubkey
         }

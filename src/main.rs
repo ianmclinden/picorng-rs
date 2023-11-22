@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     simplelog::SimpleLogger::init(console_log_level, simplelog::Config::default())?;
 
     if !nix::unistd::geteuid().is_root() {
-        log::warn!("You may encounter problems without root permissions");
+        eprintln!("WARNING: You may encounter problems without root permissions");
     }
 
     let cli = PICoRNGClient::new(args.config_dir, args.device_number, args.timeout)?;
