@@ -52,9 +52,23 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("could not parse key from slice: {0}")]
+    TryFromSliceError(#[from] std::array::TryFromSliceError),
+
+    #[error("could not parse key from vec")]
+    TryFromVecError,
+}
+
 // TODO : conditional compilation for other ec sizes
 pub mod sect163k1 {
-    use crate::bindings::{ECC_PRV_KEY_SIZE, ECC_PUB_KEY_SIZE};
+    use crate::{
+        bindings::{ECC_PRV_KEY_SIZE, ECC_PUB_KEY_SIZE},
+        Error,
+    };
 
     use rand::RngCore;
 
@@ -128,7 +142,7 @@ pub mod sect163k1 {
     }
 
     impl TryFrom<&[u8]> for PrivKey {
-        type Error = std::array::TryFromSliceError;
+        type Error = Error;
 
         fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
             Ok(Self {
@@ -138,17 +152,11 @@ pub mod sect163k1 {
     }
 
     impl TryFrom<Vec<u8>> for PrivKey {
-        type Error = String;
+        type Error = Error;
 
         fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
             Ok(Self {
-                data: value.try_into().map_err(|e: Vec<u8>| {
-                    format!(
-                        "Could not parse sect163r2::PrivKey from Vec of length {}",
-                        e.len()
-                    )
-                    .to_string()
-                })?,
+                data: value.try_into().map_err(|_| Error::TryFromVecError)?,
             })
         }
     }
@@ -185,28 +193,22 @@ pub mod sect163k1 {
         }
     }
 
-    impl TryFrom<Vec<u8>> for PubKey {
-        type Error = String;
-
-        fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-            Ok(Self {
-                data: value.try_into().map_err(|e: Vec<u8>| {
-                    format!(
-                        "Could not parse sect163r2::PubKey from Vec of length {}",
-                        e.len()
-                    )
-                    .to_string()
-                })?,
-            })
-        }
-    }
-
     impl TryFrom<&[u8]> for PubKey {
-        type Error = std::array::TryFromSliceError;
+        type Error = Error;
 
         fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
             Ok(Self {
                 data: value.try_into()?,
+            })
+        }
+    }
+
+    impl TryFrom<Vec<u8>> for PubKey {
+        type Error = Error;
+
+        fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+            Ok(Self {
+                data: value.try_into().map_err(|_| Error::TryFromVecError)?,
             })
         }
     }

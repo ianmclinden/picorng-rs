@@ -18,11 +18,30 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::error::Error;
-
+use thiserror::Error;
 use tiny_ecdh::sect163k1;
 
 pub const RAND_DATA_BLOCK_SIZE: usize = 32;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("invalid payload length for {0}")]
+    InvalidPayloadLength(String),
+
+    #[error("invalid field length")]
+    InvalidFieldLength(#[from] std::array::TryFromSliceError),
+
+    #[error("invalid payload: {0}")]
+    InvalidKey(#[from] tiny_ecdh::Error),
+
+    #[error("invalid packet type {0}")]
+    InvalidType(u8),
+
+    #[error("empty buffer")]
+    Empty,
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -93,9 +112,9 @@ impl PICoPacket {
             PICoPacket::InfoResponse { version, status } => {
                 buf.extend_from_slice(&version.to_le_bytes());
                 match status {
-                    PICoInfoResponseStatus::Flags { configured } => buf.push(*configured as u8),
+                    PICoInfoResponseStatus::Flags { configured } => buf.push(u8::from(*configured)),
                     PICoInfoResponseStatus::Value(value) => {
-                        buf.extend_from_slice(&value.to_le_bytes())
+                        buf.extend_from_slice(&value.to_le_bytes());
                     }
                 }
             }
@@ -110,7 +129,7 @@ impl PICoPacket {
                 ecc_priv_key,
             } => {
                 buf.extend_from_slice(&status.to_le_bytes());
-                buf.extend_from_slice(ecc_priv_key.as_bytes())
+                buf.extend_from_slice(ecc_priv_key.as_bytes());
             }
             PICoPacket::IdentityVerifyRequest { ecc_pub_key } => {
                 buf.extend_from_slice(ecc_pub_key.as_bytes());
@@ -122,7 +141,7 @@ impl PICoPacket {
         buf
     }
 
-    pub fn from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn Error>> {
+    pub fn from_bytes(buffer: &[u8]) -> Result<Self> {
         let payload = &buffer[2..];
         match buffer.first() {
             Some(0) => Ok(PICoPacket::None),
@@ -140,7 +159,7 @@ impl PICoPacket {
                         },
                     })
                 }
-                _ => Err("Invalid payload length for InfoReponse".into()),
+                _ => Err(Error::InvalidPayloadLength("InfoResponse".into())),
             },
 
             Some(3) => Ok(Self::RandomDataRequest),
@@ -149,14 +168,16 @@ impl PICoPacket {
                 Some(random_data) => Ok(PICoPacket::RandomDataResponse {
                     random_data: random_data.try_into()?,
                 }),
-                None => Err("Invalid payload length for RandomDataResponse".into()),
+                None => Err(Error::InvalidPayloadLength("RandomDataResponse".into())),
             },
 
             Some(5) => match payload.get(0..sect163k1::PrivKey::size()) {
                 Some(ecc_priv_key) => Ok(Self::IdentityConfigureRequest {
                     ecc_priv_key: ecc_priv_key.try_into()?,
                 }),
-                None => Err("Invalid payload length for IdentityConfigureRequest".into()),
+                None => Err(Error::InvalidPayloadLength(
+                    "IdentityConfigureRequest".into(),
+                )),
             },
 
             Some(6) => match (
@@ -167,25 +188,27 @@ impl PICoPacket {
                     status: u16::from_le_bytes(status.try_into()?),
                     ecc_priv_key: ecc_priv_key.try_into()?,
                 }),
-                (_, _) => Err("Invalid payload length for IdentityConfigureResponse".into()),
+                (_, _) => Err(Error::InvalidPayloadLength(
+                    "IdentityConfigureResponse".into(),
+                )),
             },
 
             Some(7) => match payload.get(0..sect163k1::PubKey::size()) {
                 Some(ecc_pub_key) => Ok(PICoPacket::IdentityVerifyRequest {
                     ecc_pub_key: ecc_pub_key.try_into()?,
                 }),
-                None => Err("Invalid payload length for IdentityVerifyRequest".into()),
+                None => Err(Error::InvalidPayloadLength("IdentityVerifyRequest".into())),
             },
 
             Some(8) => match payload.get(0..sect163k1::SharedSecret::size()) {
                 Some(ecc_shared_secret) => Ok(PICoPacket::IdentityVerifyResponse {
                     ecc_shared_secret: ecc_shared_secret.try_into()?,
                 }),
-                None => Err("Invalid payload length for IdentityVerifyRequest".into()),
+                None => Err(Error::InvalidPayloadLength("IdentityVerifyResponse".into())),
             },
 
-            Some(t) => Err(format!("Invalid packet type {t}").into()),
-            None => Err("Empty buffer".into()),
+            Some(t) => Err(Error::InvalidType(*t)),
+            None => Err(Error::Empty),
         }
     }
 
@@ -223,7 +246,7 @@ pub mod test {
     #[test]
     fn test_info_response() {
         let packet = PICoPacket::InfoResponse {
-            version: 0xDEADBEEF,
+            version: 0xDEAD_BEEF,
             status: PICoInfoResponseStatus::Flags { configured: false },
         };
         let buf = PICoPacket::as_bytes(&packet);
@@ -233,7 +256,7 @@ pub mod test {
         assert_eq!(r_packet, packet);
 
         let packet = PICoPacket::InfoResponse {
-            version: 0xDEADBEEF,
+            version: 0xDEAD_BEEF,
             status: PICoInfoResponseStatus::Flags { configured: true },
         };
         let buf = PICoPacket::as_bytes(&packet);

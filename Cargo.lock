@@ -433,6 +433,7 @@ dependencies = [
  "nix",
  "rusb",
  "simplelog",
+ "thiserror",
  "tiny_ecdh",
 ]
 
@@ -719,6 +720,7 @@ dependencies = [
  "cc",
  "hex",
  "rand",
+ "thiserror",
 ]
 
 [[package]]

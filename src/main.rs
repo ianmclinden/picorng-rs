@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let cli = PICoRNGClient::new(args.config_dir, args.device_number, args.timeout)?;
 
-    match args.command {
+    let result = match args.command {
         Commands::List => cli.list_devices(),
         Commands::Info => cli.print_info(),
         Commands::Pair => cli.pair(),
@@ -108,5 +108,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Cat { blocks } => cli.get_random_blocks(blocks),
         Commands::Quality { blocks } => cli.check_quality(blocks),
         Commands::Rngd { no_verify } => cli.feed_rngd(no_verify),
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => Err(format!("{e}").into()),
     }
 }

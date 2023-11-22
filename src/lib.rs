@@ -19,7 +19,6 @@
 */
 
 use std::{
-    error::Error,
     fs,
     io::Write,
     os::unix::prelude::PermissionsExt,
@@ -37,12 +36,54 @@ use rusb::{
     constants::{LIBUSB_ENDPOINT_IN, LIBUSB_ENDPOINT_OUT},
     Device, GlobalContext,
 };
+use thiserror::Error;
 use tiny_ecdh::sect163k1::{self, PubKey, SharedSecret};
 
 use crate::{entropy::Entropy, protocol::RAND_DATA_BLOCK_SIZE};
 
 mod entropy;
 mod protocol;
+
+#[derive(Error, Debug)]
+pub enum ClientError {
+    #[error("io error: {0}")]
+    IOError(#[from] std::io::Error),
+
+    #[error("usb error: {0}")]
+    USBError(#[from] rusb::Error),
+
+    #[error("no such device number '{0}'")]
+    NotFound(usize),
+
+    #[error("protocol error: {0}")]
+    ProtocolError(#[from] protocol::Error),
+
+    #[error("got wrong packet type as response")]
+    BadResponse,
+
+    #[error("device was already configured")]
+    DeviceConfigured,
+
+    #[error("failed to verify device keys")]
+    MismatchedKeys,
+
+    #[error("could not find any public keys in the config directory")]
+    NoPublicKeys,
+
+    #[error("could not verify device")]
+    FailedVerification,
+
+    #[error("could not set interrupt handler")]
+    InterruptHandlerError(#[from] ctrlc::Error),
+
+    #[error("{0}")]
+    Other(String),
+
+    #[error("unknown error")]
+    Unknown,
+}
+
+pub type Result<T> = std::result::Result<T, ClientError>;
 
 #[derive(Debug)]
 pub struct PICoRNGClient {
@@ -58,7 +99,7 @@ impl PICoRNGClient {
     const DESCRIPTOR_INDEX: u8 = 1;
     const INTERFACE_NUM: u8 = 0;
 
-    pub fn new(cfg_dir: String, dev_number: usize, timeout: u64) -> Result<Self, Box<dyn Error>> {
+    pub fn new(cfg_dir: String, dev_number: usize, timeout: u64) -> Result<Self> {
         Ok(Self {
             devices: Self::find_devices()?,
             cfg_dir: expanduser(cfg_dir)?,
@@ -67,14 +108,14 @@ impl PICoRNGClient {
         })
     }
 
-    fn create_cfg_dir(&self) -> Result<&PathBuf, Box<dyn Error>> {
+    fn create_cfg_dir(&self) -> Result<&PathBuf> {
         fs::create_dir_all(&self.cfg_dir)?;
         fs::set_permissions(&self.cfg_dir, fs::Permissions::from_mode(0o700))?;
         log::info!("Config directory: {}", self.cfg_dir.to_string_lossy());
         Ok(&self.cfg_dir)
     }
 
-    fn find_devices() -> Result<Vec<Device<GlobalContext>>, Box<dyn Error>> {
+    fn find_devices() -> Result<Vec<Device<GlobalContext>>> {
         Ok(rusb::devices()?
             .iter()
             .filter(|d| match d.device_descriptor() {
@@ -86,15 +127,11 @@ impl PICoRNGClient {
             .collect())
     }
 
-    fn send_and_receive(
-        &self,
-        packet: PICoPacket,
-        timeout: Duration,
-    ) -> Result<PICoPacket, Box<dyn Error>> {
+    fn send_and_receive(&self, packet: PICoPacket, timeout: Duration) -> Result<PICoPacket> {
         let device = self
             .devices
             .get(self.dev_number)
-            .ok_or(format!("No such device number: {}", self.dev_number))?;
+            .ok_or(ClientError::NotFound(self.dev_number))?;
 
         let mut handle = device.open()?;
         handle.claim_interface(Self::INTERFACE_NUM)?;
@@ -110,8 +147,8 @@ impl PICoRNGClient {
         Ok(rx_packet)
     }
 
-    /// List all PICoRNG devices with debug information
-    pub fn list_devices(&self) -> Result<(), Box<dyn Error>> {
+    /// List all `PICoRNG`` devices with debug information
+    pub fn list_devices(&self) -> Result<()> {
         for (i, device) in self.devices.iter().enumerate() {
             let path = match device.port_numbers() {
                 Ok(ports) => {
@@ -139,10 +176,10 @@ impl PICoRNGClient {
     }
 
     /// Print info about the currently selected device
-    pub fn print_info(&self) -> Result<(), Box<dyn Error>> {
+    pub fn print_info(&self) -> Result<()> {
         match self.send_and_receive(PICoPacket::InfoRequest, self.usb_timeout)? {
             PICoPacket::InfoResponse { version, status } => {
-                println!("Version: {:#010x}", version);
+                println!("Version: {version:#010x}");
                 println!();
                 let configured = match status {
                     protocol::PICoInfoResponseStatus::Flags { configured } => configured,
@@ -150,12 +187,12 @@ impl PICoRNGClient {
                 };
                 Ok(println!("Configured: {configured}"))
             }
-            _ => Err("Got wrong packet type as response".into()),
+            _ => Err(ClientError::BadResponse),
         }
     }
 
     /// Generate and install an ECDH keypair onto the selected device
-    pub fn pair(&self) -> Result<(), Box<dyn Error>> {
+    pub fn pair(&self) -> Result<()> {
         log::trace!("Generating sect163k1 keypair");
         let key = sect163k1::Key::generate();
         let ecc_priv_key = key.private_key();
@@ -168,7 +205,7 @@ impl PICoRNGClient {
             PICoPacket::IdentityConfigureResponse {
                 status,
                 ecc_priv_key: _,
-            } if status != 0 => Err("Device already configured".into()),
+            } if status != 0 => Err(ClientError::DeviceConfigured),
             PICoPacket::IdentityConfigureResponse {
                 status: _,
                 ecc_priv_key: new_priv_key,
@@ -183,7 +220,7 @@ impl PICoRNGClient {
                     new_priv_key.len(),
                     new_priv_key.to_hex_string()
                 );
-                Err("Data verification failed".into())
+                Err(ClientError::MismatchedKeys)
             }
             PICoPacket::IdentityConfigureResponse {
                 status: _,
@@ -207,12 +244,12 @@ impl PICoRNGClient {
                 cfg_file.flush()?;
                 Ok(println!("Success"))
             }
-            _ => Err("Got wrong packet type as response".into()),
+            _ => Err(ClientError::BadResponse),
         }
     }
 
     /// Verify that the configured device generates a valid shared secret
-    pub fn verify(&self) -> Result<(), Box<dyn Error>> {
+    pub fn verify(&self) -> Result<()> {
         log::trace!("Generating sect163k1 challenge keypair");
         let key = sect163k1::Key::generate();
         let rand_priv_key = key.private_key();
@@ -225,7 +262,9 @@ impl PICoRNGClient {
         for file in cfg_dir {
             let key_path = file?.path();
             let ecc_pub_key: PubKey = fs::read(&key_path)?.try_into().map_err(|_| {
-                format!("Key '{}' has invalid length", key_path.to_string_lossy()).to_string()
+                ClientError::Other(
+                    format!("Key '{}' has invalid length", key_path.to_string_lossy()).to_string(),
+                )
             })?;
             log::trace!("Loaded public key '{}'", key_path.to_string_lossy());
             let ecc_shared_secret = rand_priv_key.diffie_hellman(&ecc_pub_key);
@@ -237,7 +276,7 @@ impl PICoRNGClient {
         }
 
         if ecc_shared_secrets.is_empty() {
-            return Err("Config directory did not contain any valid pubkeys".into());
+            return Err(ClientError::NoPublicKeys);
         }
 
         println!("The verification process will take at least a minute.");
@@ -259,10 +298,10 @@ impl PICoRNGClient {
                 // 6. Check if there are matches
                 match ecc_shared_secrets.contains(&ecc_shared_secret) {
                     true => Ok(println!("Success")),
-                    false => Err("Failed".into()),
+                    false => Err(ClientError::FailedVerification),
                 }
             }
-            _ => Err("Got wrong packet type as response".into()),
+            _ => Err(ClientError::BadResponse),
         }
     }
 
@@ -270,7 +309,7 @@ impl PICoRNGClient {
     ///
     /// # Aguments
     /// * `blocks` - If [Some(size)], then get `size` blocks, otherwise fetch until interrupted
-    pub fn get_random_blocks(&self, blocks: Option<usize>) -> Result<(), Box<dyn Error>> {
+    pub fn get_random_blocks(&self, blocks: Option<usize>) -> Result<()> {
         let mut sent: usize = 0;
         let running = Arc::new(AtomicBool::new(true));
         let r = running.clone();
@@ -284,7 +323,7 @@ impl PICoRNGClient {
                 PICoPacket::RandomDataResponse { random_data } => {
                     std::io::stdout().write_all(&random_data)?;
                 }
-                _ => return Err("Got wrong packet type as response".into()),
+                _ => return Err(ClientError::BadResponse),
             };
 
             if let Some(blocks) = blocks {
@@ -301,7 +340,7 @@ impl PICoRNGClient {
     ///
     /// # Aguments
     /// * `blocks` - The number of blocks to be analyzed
-    pub fn check_quality(&self, blocks: usize) -> Result<(), Box<dyn Error>> {
+    pub fn check_quality(&self, blocks: usize) -> Result<()> {
         println!(
             "Gathering {} blocks ({} bytes) of random data ...\n",
             blocks,
@@ -323,7 +362,7 @@ impl PICoRNGClient {
                 PICoPacket::RandomDataResponse { random_data } => {
                     entropy.add_from_slice(&random_data);
                 }
-                _ => return Err("Got wrong packet type as response".into()),
+                _ => return Err(ClientError::BadResponse),
             };
 
             received += 1;
@@ -364,7 +403,7 @@ impl PICoRNGClient {
     ///
     /// # Aguments
     /// * `skip_verify` - If `true` then device verification will be skipped
-    pub fn feed_rngd(&self, skip_verify: bool) -> Result<(), Box<dyn Error>> {
+    pub fn feed_rngd(&self, skip_verify: bool) -> Result<()> {
         if !skip_verify {
             log::info!("Verifying device");
             self.verify()?;
@@ -372,11 +411,11 @@ impl PICoRNGClient {
 
         let mut urandom = fs::OpenOptions::new().append(true).open("/dev/urandom")?;
 
-        const BLOCKS: usize = 1024;
+        let blocks: usize = 1024;
         log::debug!(
             "Gathering data in {} blocks ({} bytes) at a time",
-            BLOCKS,
-            BLOCKS * RAND_DATA_BLOCK_SIZE
+            blocks,
+            blocks * RAND_DATA_BLOCK_SIZE
         );
         let running = Arc::new(AtomicBool::new(true));
         let r = running.clone();
@@ -394,11 +433,11 @@ impl PICoRNGClient {
                     PICoPacket::RandomDataResponse { random_data } => {
                         rnd_buf.extend_from_slice(&random_data);
                     }
-                    _ => return Err("Got wrong packet type as response".into()),
+                    _ => return Err(ClientError::BadResponse),
                 }
 
                 received += 1;
-                if received >= BLOCKS {
+                if received >= blocks {
                     break;
                 }
             }
