@@ -6,6 +6,9 @@ authors = ["Ian McLinden", "ReimuNotMoe <reimu@sudomaker.com>"]
 homepage = "https://github.com/ianmclinden/picorng-rs"
 edition = "2021"
 
+[workspace]
+members = ["tiny_ecdh"]
+
 [dependencies]
 clap = { version = "4.4.8", features = ["derive", "cargo"] }
 ctrlc = "3.4.1"
