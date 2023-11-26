@@ -12,10 +12,10 @@ members = ["tiny_ecdh"]
 [dependencies]
 clap = { version = "4.4.8", features = ["derive", "cargo"] }
 ctrlc = "3.4.1"
-tiny_ecdh = { path = "./tiny_ecdh" }
+env_logger = { version = "0.10.1", default-features = false }
 expanduser = "1.2.2"
+log = "0.4.20"
 nix = { version = "0.27.1", features = ["user"] }
 rusb = "0.9.3"
-log = "0.4.20"
-simplelog = { version = "0.12.1", default-features = false }
 thiserror = "1.0.50"
+tiny_ecdh = { path = "./tiny_ecdh" }

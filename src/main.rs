@@ -21,6 +21,7 @@
 use std::error::Error;
 
 use clap::{ArgAction, Parser, Subcommand};
+use env_logger::Builder;
 use log::LevelFilter;
 use picorng::PICoRNGClient;
 
@@ -92,10 +93,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         2 => LevelFilter::Debug,
         _ => LevelFilter::Trace,
     };
-    simplelog::SimpleLogger::init(console_log_level, simplelog::Config::default())?;
+    Builder::from_default_env()
+        .filter_level(console_log_level)
+        .format_target(false)
+        .format_timestamp(None)
+        .init();
 
     if !nix::unistd::geteuid().is_root() {
-        eprintln!("WARNING: You may encounter problems without root permissions");
+        log::warn!("You may encounter problems without root permissions");
     }
 
     let cli = PICoRNGClient::new(args.config_dir, args.device_number, args.timeout)?;
