@@ -42,6 +42,8 @@
 //! assert_eq!(shared_1_2, shared_2_1);
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
 #[allow(non_upper_case_globals)]
 #[allow(non_camel_case_types)]
 #[allow(non_snake_case)]
@@ -53,12 +55,15 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+#[cfg(feature = "std")]
 use thiserror::Error;
+#[cfg(not(feature = "std"))]
+use thiserror_no_std::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("could not parse key from slice: {0}")]
-    TryFromSliceError(#[from] std::array::TryFromSliceError),
+    TryFromSliceError(#[from] core::array::TryFromSliceError),
 
     #[error("could not parse key from vec")]
     TryFromVecError,
@@ -67,7 +72,7 @@ pub enum Error {
     IllegalMut,
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 // TODO : conditional compilation for other ec sizes
 pub mod sect163k1 {
@@ -81,10 +86,12 @@ pub mod sect163k1 {
     /// An ECC Private Key
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct PrivKey {
-        data: [u8; ECC_PRV_KEY_SIZE as usize],
+        data: [u8; Self::SIZE],
     }
 
     impl PrivKey {
+        const SIZE: usize = ECC_PRV_KEY_SIZE as usize;
+
         /// Generate a new [`PrivKey`]
         #[must_use]
         pub fn generate() -> Self {
@@ -102,7 +109,7 @@ pub mod sect163k1 {
 
         /// Get the expected size of the [`PrivKey`] in bytes
         #[must_use]
-        pub fn size() -> usize {
+        pub const fn size() -> usize {
             ECC_PRV_KEY_SIZE as usize
         }
 
@@ -117,6 +124,7 @@ pub mod sect163k1 {
             self.len() == 0
         }
 
+        #[cfg(feature = "std")]
         #[must_use]
         pub fn to_hex_string(&self) -> String {
             hex::encode(self.data)
@@ -130,7 +138,7 @@ pub mod sect163k1 {
         /// Try to generate a new [`PubKey`] derived from a [`PrivKey`]
         ///
         /// # Errors
-        /// Returns an [`Error`] if the underlying library illegally mutates
+        /// Returns an [`enum@Error`] if the underlying library illegally mutates
         /// the base [`PrivKey`]. This should not happen if the key has been correctly
         /// initialized
         pub fn try_generate_pubkey(&self) -> Result<PubKey> {
@@ -186,6 +194,7 @@ pub mod sect163k1 {
         }
     }
 
+    #[cfg(feature = "std")]
     impl TryFrom<Vec<u8>> for PrivKey {
         type Error = Error;
 
@@ -199,10 +208,12 @@ pub mod sect163k1 {
     /// An ECC Public Key
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct PubKey {
-        data: [u8; ECC_PUB_KEY_SIZE as usize],
+        data: [u8; Self::SIZE],
     }
 
     impl PubKey {
+        const SIZE: usize = ECC_PUB_KEY_SIZE as usize;
+
         pub(crate) fn new() -> Self {
             Self {
                 data: [0u8; ECC_PUB_KEY_SIZE as usize],
@@ -211,7 +222,7 @@ pub mod sect163k1 {
 
         /// Get the expected size of the [`PubKey`] in bytes
         #[must_use]
-        pub fn size() -> usize {
+        pub const fn size() -> usize {
             ECC_PUB_KEY_SIZE as usize
         }
 
@@ -226,6 +237,7 @@ pub mod sect163k1 {
             self.len() == 0
         }
 
+        #[cfg(feature = "std")]
         #[must_use]
         pub fn to_hex_string(&self) -> String {
             hex::encode(self.data)
@@ -247,6 +259,7 @@ pub mod sect163k1 {
         }
     }
 
+    #[cfg(feature = "std")]
     impl TryFrom<Vec<u8>> for PubKey {
         type Error = Error;
 
@@ -268,11 +281,11 @@ pub mod sect163k1 {
     }
 
     impl Key {
-        /// .
+        /// Generate a new ECC [`Key`], with a randomly generated [`PrivKey`] and a derived [`PubKey`]
         ///
         /// # Errors
         ///
-        /// Returns an error if an error generating the contained keys occurs
+        /// Returns an [`enum@Error`] if an error generating the contained keys occurs
         pub fn try_generate() -> Result<Self> {
             let privkey = PrivKey::generate();
             let pubkey = privkey.try_generate_pubkey()?;
@@ -304,6 +317,7 @@ pub mod sect163k1 {
 
     #[cfg(test)]
     mod tests {
+
         use super::{Key, PrivKey, PubKey};
         use crate::bindings::{ECC_PRV_KEY_SIZE, ECC_PUB_KEY_SIZE};
 
@@ -319,8 +333,9 @@ pub mod sect163k1 {
             assert_eq!(key.public_key().len(), PubKey::size());
         }
 
+        #[cfg(feature = "std")]
         #[test]
-        fn test_parse_privkey() {
+        fn test_parse_privkey_vec() {
             let mut data = vec![
                 0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
                 23,
@@ -335,7 +350,23 @@ pub mod sect163k1 {
         }
 
         #[test]
-        fn test_parse_pubkey() {
+        fn test_parse_privkey_slice() {
+            let data = [
+                0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23,
+            ];
+            let prikey = PrivKey::try_from(data.as_slice());
+            assert!(prikey.is_ok());
+            assert_eq!(prikey.unwrap().as_bytes(), &data);
+
+            let data: [u8; 22] = data[0..22].try_into().unwrap();
+            let prikey = PrivKey::try_from(data.as_slice());
+            assert!(prikey.is_err());
+        }
+
+        #[cfg(feature = "std")]
+        #[test]
+        fn test_parse_pubkey_vec() {
             let mut data = vec![
                 0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
                 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
@@ -347,6 +378,22 @@ pub mod sect163k1 {
 
             data.truncate(43);
             let prikey = PrivKey::try_from(data.clone());
+            assert!(prikey.is_err());
+        }
+
+        #[test]
+        fn test_parse_pubkey_slice() {
+            let data = [
+                0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
+                44, 45, 46, 47,
+            ];
+            let pubkey = PubKey::try_from(data.as_slice());
+            assert!(pubkey.is_ok());
+            assert_eq!(pubkey.unwrap().as_bytes(), &data);
+
+            let data: [u8; 43] = data[0..43].try_into().unwrap();
+            let prikey = PrivKey::try_from(data.as_slice());
             assert!(prikey.is_err());
         }
 

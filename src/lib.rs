@@ -30,8 +30,9 @@ use std::{
     time::Duration,
 };
 
+use crate::entropy::Entropy;
 use expanduser::expanduser;
-use protocol::PICoPacket;
+use picorng_proto::{PICoPacket, RAND_DATA_BLOCK_SIZE};
 use rusb::{
     constants::{LIBUSB_ENDPOINT_IN, LIBUSB_ENDPOINT_OUT},
     Device, GlobalContext,
@@ -39,15 +40,12 @@ use rusb::{
 use thiserror::Error;
 use tiny_ecdh::sect163k1::{self, PubKey, SharedSecret};
 
-use crate::{entropy::Entropy, protocol::RAND_DATA_BLOCK_SIZE};
-
 mod entropy;
-mod protocol;
 
 #[cfg(target_os = "macos")]
-const RANDOM_DEVICE: &str = "/dev/random";
+pub const RANDOM_DEVICE: &str = "/dev/random";
 #[cfg(not(target_os = "macos"))]
-const RANDOM_DEVICE: &str = "/dev/urandom";
+pub const RANDOM_DEVICE: &str = "/dev/urandom";
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -61,7 +59,7 @@ pub enum ClientError {
     NotFound(usize),
 
     #[error("protocol error: {0}")]
-    ProtocolError(#[from] protocol::Error),
+    ProtocolError(#[from] picorng_proto::Error),
 
     #[error("got wrong packet type as response")]
     BadResponse,
@@ -155,7 +153,7 @@ impl PICoRNGClient {
         handle.write_bulk(1 | LIBUSB_ENDPOINT_OUT, &packet.as_bytes(), timeout)?;
 
         log::trace!("Waiting for response...");
-        let mut buf: Vec<u8> = vec![0; PICoPacket::buffer_size()];
+        let mut buf: Vec<u8> = vec![0; PICoPacket::max_buffer_size()];
         handle.read_bulk(1 | LIBUSB_ENDPOINT_IN, &mut buf, timeout)?;
         let rx_packet = PICoPacket::from_bytes(&buf)?;
         log::trace!("Received {:?}", rx_packet);
@@ -202,11 +200,7 @@ impl PICoRNGClient {
             PICoPacket::InfoResponse { version, status } => {
                 println!("Version: {version:#010x}");
                 println!();
-                let configured = match status {
-                    protocol::PICoInfoResponseStatus::Flags { configured } => configured,
-                    protocol::PICoInfoResponseStatus::Value(_) => false,
-                };
-                Ok(println!("Configured: {configured}"))
+                Ok(println!("Configured: {}", status.is_configured()))
             }
             _ => Err(ClientError::BadResponse),
         }
@@ -437,14 +431,14 @@ impl PICoRNGClient {
         Ok(())
     }
 
-    /// Seed [`RANDOM_DEVICE`](crate::RANDOM_DEVICE) with data from the configured device
+    /// Seed [`RANDOM_DEVICE`] with data from the configured device
     ///
     /// # Arguments
     /// * `skip_verify` - If `true` then device verification will be skipped
     ///
     /// # Errors
     /// Returns a [`ClientError`] if there is an issue communicating with the device,
-    /// or if there is an issue writing to [`RANDOM_DEVICE`](crate::RANDOM_DEVICE)
+    /// or if there is an issue writing to [`RANDOM_DEVICE`]
     pub fn feed_rngd(&self, skip_verify: bool) -> Result<()> {
         if !skip_verify {
             log::info!("Verifying device");
