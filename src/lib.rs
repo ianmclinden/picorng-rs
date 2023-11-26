@@ -44,6 +44,11 @@ use crate::{entropy::Entropy, protocol::RAND_DATA_BLOCK_SIZE};
 mod entropy;
 mod protocol;
 
+#[cfg(target_os = "macos")]
+const RANDOM_DEVICE: &str = "/dev/random";
+#[cfg(not(target_os = "macos"))]
+const RANDOM_DEVICE: &str = "/dev/urandom";
+
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("io error: {0}")]
@@ -432,21 +437,21 @@ impl PICoRNGClient {
         Ok(())
     }
 
-    /// Seed `/dev/urandom` with data from the configured device
+    /// Seed [`RANDOM_DEVICE`](crate::RANDOM_DEVICE) with data from the configured device
     ///
     /// # Arguments
     /// * `skip_verify` - If `true` then device verification will be skipped
     ///
     /// # Errors
     /// Returns a [`ClientError`] if there is an issue communicating with the device,
-    /// or if there is an issue writing to `/dev/urandom`
+    /// or if there is an issue writing to [`RANDOM_DEVICE`](crate::RANDOM_DEVICE)
     pub fn feed_rngd(&self, skip_verify: bool) -> Result<()> {
         if !skip_verify {
             log::info!("Verifying device");
             self.verify()?;
         }
 
-        let mut urandom = fs::OpenOptions::new().append(true).open("/dev/urandom")?;
+        let mut urandom = fs::OpenOptions::new().append(true).open(RANDOM_DEVICE)?;
 
         let blocks: usize = 1024;
         log::debug!(
@@ -496,7 +501,7 @@ impl PICoRNGClient {
                 continue;
             }
 
-            log::info!("Writing {} bytes to rand pool", rnd_buf.len());
+            log::info!("Writing {} bytes to '{RANDOM_DEVICE}'", rnd_buf.len());
             urandom.write_all(&rnd_buf)?;
         }
         Ok(())
