@@ -77,8 +77,8 @@ pub type Result<T> = core::result::Result<T, Error>;
 // TODO : conditional compilation for other ec sizes
 pub mod sect163k1 {
     use crate::{
-        bindings::{ECC_PRV_KEY_SIZE, ECC_PUB_KEY_SIZE},
         Error, Result,
+        bindings::{ECC_PRV_KEY_SIZE, ECC_PUB_KEY_SIZE},
     };
 
     use rand::RngCore;
@@ -96,7 +96,7 @@ pub mod sect163k1 {
         #[must_use]
         pub fn generate() -> Self {
             let mut data = [0u8; ECC_PRV_KEY_SIZE as usize];
-            rand::thread_rng().fill_bytes(&mut data);
+            rand::rng().fill_bytes(&mut data);
 
             // Generate mutates the privkey, so make sure it conforms
             let mut pubkey = PubKey::new();
