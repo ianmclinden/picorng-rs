@@ -86,11 +86,7 @@ impl Entropy {
             let x: f64 = f64::from(*x) / 255.0;
             let y: f64 = f64::from(*y) / 255.0;
             let p: f64 = x * x + y * y;
-            if p <= 1.0 {
-                acc + 1
-            } else {
-                acc
-            }
+            if p <= 1.0 { acc + 1 } else { acc }
         });
         f64::from(count) * 4.0 / (pairs.len() as f64)
     }

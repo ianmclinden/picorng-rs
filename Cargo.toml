@@ -1,22 +1,22 @@
 [package]
 name = "picorng"
 description = "CLI for the PICoRNG - USB random number generator"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Ian McLinden", "ReimuNotMoe <reimu@sudomaker.com>"]
 homepage = "https://github.com/ianmclinden/picorng-rs"
-edition = "2021"
+edition = "2024"
 
 [workspace]
 members = ["picorng_proto", "tiny_ecdh"]
 
 [dependencies]
-clap = { version = "4.4.8", features = ["derive", "cargo"] }
-ctrlc = "3.4.1"
-env_logger = { version = "0.10.1", default-features = false }
+clap = { version = "4.5.51", features = ["derive", "cargo"] }
+ctrlc = "3.5.1"
+env_logger = { version = "0.11.8", default-features = false }
 expanduser = "1.2.2"
-log = "0.4.20"
-nix = { version = "0.27.1", features = ["user"] }
+log = "0.4.28"
+nix = { version = "0.30.1", features = ["user"] }
 picorng_proto = { path = "./picorng_proto" }
-rusb = "0.9.3"
-thiserror = "1.0.50"
+rusb = "0.9.4"
+thiserror = "2.0.17"
 tiny_ecdh = { path = "./tiny_ecdh" }

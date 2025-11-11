@@ -24,8 +24,8 @@ use std::{
     os::unix::prelude::PermissionsExt,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -34,8 +34,8 @@ use crate::entropy::Entropy;
 use expanduser::expanduser;
 use picorng_proto::{PICoPacket, RAND_DATA_BLOCK_SIZE};
 use rusb::{
-    constants::{LIBUSB_ENDPOINT_IN, LIBUSB_ENDPOINT_OUT},
     Device, GlobalContext,
+    constants::{LIBUSB_ENDPOINT_IN, LIBUSB_ENDPOINT_OUT},
 };
 use thiserror::Error;
 use tiny_ecdh::sect163k1::{self, PubKey, SharedSecret};
@@ -146,17 +146,17 @@ impl PICoRNGClient {
             .get(self.dev_number)
             .ok_or(ClientError::NotFound(self.dev_number))?;
 
-        let mut handle = device.open()?;
+        let handle = device.open()?;
         handle.claim_interface(Self::INTERFACE_NUM)?;
 
-        log::trace!("Sending {:?}", packet);
+        log::trace!("Sending {packet:?}",);
         handle.write_bulk(1 | LIBUSB_ENDPOINT_OUT, &packet.as_bytes(), timeout)?;
 
         log::trace!("Waiting for response...");
         let mut buf: Vec<u8> = vec![0; PICoPacket::max_buffer_size()];
         handle.read_bulk(1 | LIBUSB_ENDPOINT_IN, &mut buf, timeout)?;
         let rx_packet = PICoPacket::from_bytes(&buf)?;
-        log::trace!("Received {:?}", rx_packet);
+        log::trace!("Received {rx_packet:?}");
         Ok(rx_packet)
     }
 
@@ -200,7 +200,8 @@ impl PICoRNGClient {
             PICoPacket::InfoResponse { version, status } => {
                 println!("Version: {version:#010x}");
                 println!();
-                Ok(println!("Configured: {}", status.is_configured()))
+                println!("Configured: {}", status.is_configured());
+                Ok(())
             }
             _ => Err(ClientError::BadResponse),
         }
@@ -262,7 +263,8 @@ impl PICoRNGClient {
                 log::trace!("Writing public key to '{}'", ecc_pub_key.to_hex_string());
                 cfg_file.write_all(ecc_pub_key.as_bytes())?;
                 cfg_file.flush()?;
-                Ok(println!("Success"))
+                println!("Success");
+                Ok(())
             }
             _ => Err(ClientError::BadResponse),
         }
@@ -322,7 +324,8 @@ impl PICoRNGClient {
                 );
                 // 6. Check if there are matches
                 if ecc_shared_secrets.contains(&ecc_shared_secret) {
-                    Ok(println!("Success"))
+                    println!("Success");
+                    Ok(())
                 } else {
                     Err(ClientError::FailedVerification)
                 }
@@ -353,7 +356,7 @@ impl PICoRNGClient {
                     std::io::stdout().write_all(&random_data)?;
                 }
                 _ => return Err(ClientError::BadResponse),
-            };
+            }
 
             if let Some(blocks) = blocks {
                 sent += 1;
@@ -395,7 +398,7 @@ impl PICoRNGClient {
                     entropy.add_from_slice(&random_data);
                 }
                 _ => return Err(ClientError::BadResponse),
-            };
+            }
 
             received += 1;
             if received >= blocks {
