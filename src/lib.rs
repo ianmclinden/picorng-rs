@@ -124,7 +124,7 @@ impl PICoRNGClient {
     fn create_cfg_dir(&self) -> Result<&PathBuf> {
         fs::create_dir_all(&self.cfg_dir)?;
         fs::set_permissions(&self.cfg_dir, fs::Permissions::from_mode(0o700))?;
-        log::info!("Config directory: {}", self.cfg_dir.to_string_lossy());
+        log::info!("Config directory: {}", self.cfg_dir.display());
         Ok(&self.cfg_dir)
     }
 
@@ -140,7 +140,7 @@ impl PICoRNGClient {
             .collect())
     }
 
-    fn send_and_receive(&self, packet: PICoPacket, timeout: Duration) -> Result<PICoPacket> {
+    fn send_and_receive(&self, request: &PICoPacket, timeout: Duration) -> Result<PICoPacket> {
         let device = self
             .devices
             .get(self.dev_number)
@@ -149,13 +149,13 @@ impl PICoRNGClient {
         let handle = device.open()?;
         handle.claim_interface(Self::INTERFACE_NUM)?;
 
-        log::trace!("Sending {packet:?}",);
-        handle.write_bulk(1 | LIBUSB_ENDPOINT_OUT, &packet.to_bytes(), timeout)?;
+        log::trace!("Sending {request:?}",);
+        handle.write_bulk(1 | LIBUSB_ENDPOINT_OUT, &request.to_bytes(), timeout)?;
 
         log::trace!("Waiting for response...");
         let mut buf: Vec<u8> = vec![0; PICoPacket::max_buffer_size()];
-        handle.read_bulk(1 | LIBUSB_ENDPOINT_IN, &mut buf, timeout)?;
-        let rx_packet = PICoPacket::from_bytes(&buf)?;
+        let bytes = handle.read_bulk(1 | LIBUSB_ENDPOINT_IN, &mut buf, timeout)?;
+        let rx_packet = PICoPacket::from_bytes(&buf[..bytes])?;
         log::trace!("Received {rx_packet:?}");
         Ok(rx_packet)
     }
@@ -166,17 +166,17 @@ impl PICoRNGClient {
     /// Returns a [`ClientError`] if errors occur reading USB device configuration
     pub fn list_devices(&self) -> Result<()> {
         for (i, device) in self.devices.iter().enumerate() {
-            let path = match device.port_numbers() {
-                Ok(ports) => {
-                    ", path ".to_string()
-                        + &ports
-                            .into_iter()
-                            .map(|p| p.to_string())
-                            .collect::<Vec<String>>()
-                            .join(".")
-                }
-                Err(_) => String::new(),
-            };
+            let mut path = String::new();
+            if let Ok(ports) = device.port_numbers()
+                && !ports.is_empty()
+            {
+                path += ", path ";
+                path += &ports
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(".");
+            }
 
             let descriptor = device
                 .open()?
@@ -196,7 +196,7 @@ impl PICoRNGClient {
     /// # Errors
     /// Returns a [`ClientError`] if there is an issue communicating with the selected device
     pub fn print_info(&self) -> Result<()> {
-        match self.send_and_receive(PICoPacket::InfoRequest, self.usb_timeout)? {
+        match self.send_and_receive(&PICoPacket::InfoRequest, self.usb_timeout)? {
             PICoPacket::InfoResponse { version, status } => {
                 println!("Version: {version:#010x}");
                 println!();
@@ -219,10 +219,8 @@ impl PICoRNGClient {
         let ecc_priv_key = key.private_key();
         let ecc_pub_key = key.public_key();
 
-        match self.send_and_receive(
-            PICoPacket::IdentityConfigureRequest { ecc_priv_key },
-            self.usb_timeout,
-        )? {
+        let req = PICoPacket::IdentityConfigureRequest { ecc_priv_key };
+        match self.send_and_receive(&req, self.usb_timeout)? {
             PICoPacket::IdentityConfigureResponse {
                 status,
                 ecc_priv_key: _,
@@ -289,11 +287,9 @@ impl PICoRNGClient {
         for file in cfg_dir {
             let key_path = file?.path();
             let ecc_pub_key: PubKey = fs::read(&key_path)?.try_into().map_err(|_| {
-                ClientError::Other(
-                    format!("Key '{}' has invalid length", key_path.to_string_lossy()).to_string(),
-                )
+                ClientError::Other(format!("Key {:?} has invalid length", key_path.display()))
             })?;
-            log::trace!("Loaded public key '{}'", key_path.to_string_lossy());
+            log::trace!("Loaded public key {:?}", key_path.display());
             let ecc_shared_secret = rand_priv_key.diffie_hellman(&ecc_pub_key);
             log::trace!(
                 "Generated shared secret: {}",
@@ -311,12 +307,10 @@ impl PICoRNGClient {
 
         // 4. Send random pubkey to device
         // 5. Receive device calculated shared secret
-        match self.send_and_receive(
-            PICoPacket::IdentityVerifyRequest {
-                ecc_pub_key: rand_pub_key,
-            },
-            Duration::from_secs(240),
-        )? {
+        let req = PICoPacket::IdentityVerifyRequest {
+            ecc_pub_key: rand_pub_key,
+        };
+        match self.send_and_receive(&req, Duration::from_secs(240))? {
             PICoPacket::IdentityVerifyResponse { ecc_shared_secret } => {
                 log::info!(
                     "Received shared secret: {}",
@@ -344,14 +338,16 @@ impl PICoRNGClient {
     pub fn get_random_blocks(&self, blocks: Option<usize>) -> Result<()> {
         let mut sent: usize = 0;
         let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
 
-        ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
-        })?;
+        {
+            let running = Arc::clone(&running);
+            ctrlc::set_handler(move || {
+                running.store(false, Ordering::Relaxed);
+            })?;
+        }
 
-        while running.load(Ordering::SeqCst) {
-            match self.send_and_receive(PICoPacket::RandomDataRequest, self.usb_timeout)? {
+        while running.load(Ordering::Relaxed) {
+            match self.send_and_receive(&PICoPacket::RandomDataRequest, self.usb_timeout)? {
                 PICoPacket::RandomDataResponse { random_data } => {
                     std::io::stdout().write_all(&random_data)?;
                 }
@@ -361,7 +357,7 @@ impl PICoRNGClient {
             if let Some(blocks) = blocks {
                 sent += 1;
                 if sent >= blocks {
-                    running.store(false, Ordering::SeqCst);
+                    running.store(false, Ordering::Relaxed);
                 }
             }
         }
@@ -377,23 +373,24 @@ impl PICoRNGClient {
     /// Returns a [`ClientError`] if there is an issue communicating with the device
     pub fn check_quality(&self, blocks: usize) -> Result<()> {
         println!(
-            "Gathering {} blocks ({} bytes) of random data ...\n",
-            blocks,
+            "Gathering {blocks} blocks ({} bytes) of random data ...\n",
             blocks * RAND_DATA_BLOCK_SIZE
         );
 
         let mut received: usize = 0;
         let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
+
+        {
+            let running = Arc::clone(&running);
+            ctrlc::set_handler(move || {
+                running.store(false, Ordering::Relaxed);
+            })?;
+        }
 
         let mut entropy = Entropy::default();
 
-        ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
-        })?;
-
-        while running.load(Ordering::SeqCst) {
-            match self.send_and_receive(PICoPacket::RandomDataRequest, self.usb_timeout)? {
+        while running.load(Ordering::Relaxed) {
+            match self.send_and_receive(&PICoPacket::RandomDataRequest, self.usb_timeout)? {
                 PICoPacket::RandomDataResponse { random_data } => {
                     entropy.add_from_slice(&random_data);
                 }
@@ -402,7 +399,7 @@ impl PICoRNGClient {
 
             received += 1;
             if received >= blocks {
-                running.store(false, Ordering::SeqCst);
+                running.store(false, Ordering::Relaxed);
             }
         }
 
@@ -437,12 +434,13 @@ impl PICoRNGClient {
     /// Seed [`RANDOM_DEVICE`] with data from the configured device
     ///
     /// # Arguments
+    /// * `blocks` - Number of blocks to feed at a time
     /// * `skip_verify` - If `true` then device verification will be skipped
     ///
     /// # Errors
     /// Returns a [`ClientError`] if there is an issue communicating with the device,
     /// or if there is an issue writing to [`RANDOM_DEVICE`]
-    pub fn feed_rngd(&self, skip_verify: bool) -> Result<()> {
+    pub fn feed_rngd(&self, blocks: usize, skip_verify: bool) -> Result<()> {
         if !skip_verify {
             log::info!("Verifying device");
             self.verify()?;
@@ -450,25 +448,26 @@ impl PICoRNGClient {
 
         let mut urandom = fs::OpenOptions::new().append(true).open(RANDOM_DEVICE)?;
 
-        let blocks: usize = 1024;
         log::debug!(
-            "Gathering data in {} blocks ({} bytes) at a time",
-            blocks,
+            "Gathering data in {blocks} blocks ({} bytes) at a time",
             blocks * RAND_DATA_BLOCK_SIZE
         );
+
         let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
 
-        ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
-        })?;
+        {
+            let running = Arc::clone(&running);
+            ctrlc::set_handler(move || {
+                running.store(false, Ordering::Relaxed);
+            })?;
+        }
 
-        while running.load(Ordering::SeqCst) {
+        while running.load(Ordering::Relaxed) {
             let mut rnd_buf: Vec<u8> = Vec::new();
 
             let mut received: usize = 0;
-            while running.load(Ordering::SeqCst) {
-                match self.send_and_receive(PICoPacket::RandomDataRequest, self.usb_timeout)? {
+            while running.load(Ordering::Relaxed) {
+                match self.send_and_receive(&PICoPacket::RandomDataRequest, self.usb_timeout)? {
                     PICoPacket::RandomDataResponse { random_data } => {
                         rnd_buf.extend_from_slice(&random_data);
                     }

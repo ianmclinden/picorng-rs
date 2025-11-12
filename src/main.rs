@@ -26,7 +26,7 @@ use log::LevelFilter;
 use picorng::PICoRNGClient;
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version, about, long_about)]
 struct Args {
     /// Specify device number
     #[arg(short = 'n', long, value_name = "NUM", default_value_t = 0)]
@@ -64,22 +64,25 @@ enum Commands {
 
     /// Read random data into stdout
     Cat {
-        /// Number of blocks to output
-        #[arg(index = 1)]
+        /// Number of blocks to output.
         blocks: Option<usize>,
     },
 
     /// Check random data quality
     Quality {
         /// Number of blocks to assess
-        #[arg(index = 1, default_value_t = 1024)]
+        #[arg(default_value_t = 1024)]
         blocks: usize,
     },
 
     /// Feed random data to the system
     Rngd {
+        /// Number of blocks to feed at a time
+        #[arg(default_value_t = 1024)]
+        blocks: usize,
+
         /// Skip device verification
-        #[arg(short, long = "no-verify", default_value_t = false)]
+        #[arg(short, long)]
         no_verify: bool,
     },
 }
@@ -87,14 +90,14 @@ enum Commands {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let console_log_level = match args.verbose {
+    let log_level = match args.verbose {
         0 => LevelFilter::Warn,
         1 => LevelFilter::Info,
         2 => LevelFilter::Debug,
         _ => LevelFilter::Trace,
     };
     Builder::from_default_env()
-        .filter_level(console_log_level)
+        .filter_level(log_level)
         .format_target(false)
         .format_timestamp(None)
         .init();
@@ -112,7 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Verify => cli.verify(),
         Commands::Cat { blocks } => cli.get_random_blocks(blocks),
         Commands::Quality { blocks } => cli.check_quality(blocks),
-        Commands::Rngd { no_verify } => cli.feed_rngd(no_verify),
+        Commands::Rngd { blocks, no_verify } => cli.feed_rngd(blocks, no_verify),
     };
     match result {
         Ok(()) => Ok(()),
