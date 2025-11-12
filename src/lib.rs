@@ -67,6 +67,9 @@ pub enum ClientError {
     #[error("device was already configured")]
     DeviceConfigured,
 
+    #[error(transparent)]
+    KeyError(#[from] tiny_ecdh::Error),
+
     #[error("failed to verify device keys")]
     MismatchedKeys,
 
@@ -215,7 +218,7 @@ impl PICoRNGClient {
     /// or if there is an error writing the public key to the configuration directory
     pub fn pair(&self) -> Result<()> {
         log::trace!("Generating sect163k1 keypair");
-        let key = sect163k1::Key::generate();
+        let key = sect163k1::Key::try_generate()?;
         let ecc_priv_key = key.private_key();
         let ecc_pub_key = key.public_key();
 
@@ -276,7 +279,7 @@ impl PICoRNGClient {
     /// or if there is an issue communicating with the selected device
     pub fn verify(&self) -> Result<()> {
         log::trace!("Generating sect163k1 challenge keypair");
-        let key = sect163k1::Key::generate();
+        let key = sect163k1::Key::try_generate()?;
         let rand_priv_key = key.private_key();
         let rand_pub_key = key.public_key();
 

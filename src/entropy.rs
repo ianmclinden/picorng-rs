@@ -79,7 +79,7 @@ impl Entropy {
             .data
             .chunks(2)
             .filter(|v| v.len() == 2)
-            .map(|dat| (*dat.first().unwrap(), *dat.last().unwrap()))
+            .map(|dat| (*dat.first().unwrap_or(&0), *dat.last().unwrap_or(&0)))
             .collect();
 
         let count = pairs.iter().fold(0u32, |acc, (x, y)| {
