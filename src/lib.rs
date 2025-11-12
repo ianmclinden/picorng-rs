@@ -150,7 +150,7 @@ impl PICoRNGClient {
         handle.claim_interface(Self::INTERFACE_NUM)?;
 
         log::trace!("Sending {packet:?}",);
-        handle.write_bulk(1 | LIBUSB_ENDPOINT_OUT, &packet.as_bytes(), timeout)?;
+        handle.write_bulk(1 | LIBUSB_ENDPOINT_OUT, &packet.to_bytes(), timeout)?;
 
         log::trace!("Waiting for response...");
         let mut buf: Vec<u8> = vec![0; PICoPacket::max_buffer_size()];

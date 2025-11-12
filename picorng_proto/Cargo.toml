@@ -1,6 +1,6 @@
 [package]
 name = "picorng_proto"
-version = "0.1.1"
+version = "0.2.0"
 description = "PICoRNG USB protocol crate"
 authors = ["Ian McLinden", "ReimuNotMoe <reimu@sudomaker.com>"]
 homepage = "https://github.com/ianmclinden/picorng-rs"
@@ -11,7 +11,7 @@ default = ["std"]
 std = ["dep:thiserror", "tiny_ecdh/std"]
 
 [dependencies]
-heapless = "0.9.1"
+binrw = { version = "0.15.0", default-features = false }
 thiserror = { version = "2.0.17", optional = true }
 thiserror-no-std = "2.0.2"
 tiny_ecdh = { path = "../tiny_ecdh", default-features = false }

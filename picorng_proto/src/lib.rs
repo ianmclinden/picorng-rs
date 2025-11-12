@@ -21,9 +21,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(feature = "std"))]
-use core::array::TryFromSliceError;
-#[cfg(feature = "std")]
-use std::array::TryFromSliceError;
+use alloc::boxed::Box;
+use binrw::{BinRead, BinWrite, binrw, io::Cursor};
 #[cfg(feature = "std")]
 use thiserror::Error;
 #[cfg(not(feature = "std"))]
@@ -35,20 +34,39 @@ pub const RAND_DATA_BLOCK_SIZE: usize = 32;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("invalid payload length for {0:?}")]
-    InvalidPayloadLength(PacketName),
+    #[error("invalid payload length for packet type {0}")]
+    InvalidPayloadLength(u8),
 
-    #[error("invalid field length")]
-    InvalidFieldLength(#[from] TryFromSliceError),
-
-    #[error("invalid payload: {0}")]
-    InvalidKey(#[from] tiny_ecdh::Error),
-
-    #[error("invalid packet type {0}")]
-    InvalidType(u8),
+    #[error("unknown packet type {0}")]
+    UnknownType(u8),
 
     #[error("empty buffer")]
     Empty,
+
+    #[error("an unknown error")]
+    Unknown,
+}
+
+impl Error {
+    fn from_binrw(error: binrw::Error, variant: u8) -> Self {
+        match error {
+            // Base type is an enum, all errors shoudl be EnumErrors
+            binrw::Error::EnumErrors {
+                pos: _,
+                variant_errors,
+            } => match variant_errors.get(variant as usize) {
+                Some((_, e)) => {
+                    if e.is_eof() {
+                        Self::InvalidPayloadLength(variant)
+                    } else {
+                        Self::Unknown
+                    }
+                }
+                None => Self::UnknownType(variant),
+            },
+            _ => Self::Unknown,
+        }
+    }
 }
 
 #[cfg(feature = "std")]
@@ -57,21 +75,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[binrw(little)]
 pub struct PICoInfoResponseStatus {
     value: u32,
 }
 
 impl PICoInfoResponseStatus {
     #[must_use]
-    pub fn size() -> usize {
-        4
-    }
-
-    #[must_use]
-    /// Returns true if the least significant bit of the
-    /// value is 1
+    /// Returns true if the least significant byte of the value is nonzero
     pub fn is_configured(&self) -> bool {
-        (self.value & 1u32) != 0
+        (self.value & 0xFF) != 0
     }
 
     /// returns a [`PICoInfoResponseStatus`] with the configured bit set
@@ -81,217 +94,93 @@ impl PICoInfoResponseStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PacketName {
-    None,
-    InfoRequest,
-    InfoResponse,
-    RandomDataRequest,
-    RandomDataResponse,
-    IdentityConfigureRequest,
-    IdentityConfigureResponse,
-    IdentityVerifyRequest,
-    IdentityVerifyResponse,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
+#[binrw]
+#[brw(little)]
 pub enum PICoPacket {
     #[default]
+    #[brw(magic(b"\x00\x00"))] // [magic, reserved]
     None,
 
+    #[brw(magic(b"\x01\x00"))]
     InfoRequest,
+
+    #[brw(magic(b"\x02\x00"))]
     InfoResponse {
         version: u32,
         status: PICoInfoResponseStatus,
     },
 
+    #[brw(magic(b"\x03\x00"))]
     RandomDataRequest,
+    #[brw(magic(b"\x04\x00"))]
     RandomDataResponse {
         random_data: [u8; RAND_DATA_BLOCK_SIZE],
     },
 
+    #[brw(magic(b"\x05\x00"))]
     IdentityConfigureRequest {
+        #[bw(map = sect163k1::PrivKey::as_bytes)]
+        #[br(try_map = |x: [u8; sect163k1::PrivKey::size()]| sect163k1::PrivKey::try_from(&x[..]))]
         ecc_priv_key: sect163k1::PrivKey,
     },
+    #[brw(magic(b"\x06\x00"))]
     IdentityConfigureResponse {
         status: u16,
+        #[bw(map = sect163k1::PrivKey::as_bytes)]
+        #[br(try_map = |x: [u8; sect163k1::PrivKey::size()]| sect163k1::PrivKey::try_from(&x[..]))]
         ecc_priv_key: sect163k1::PrivKey,
     },
+    #[brw(magic(b"\x07\x00"))]
     IdentityVerifyRequest {
+        #[bw(map = sect163k1::PubKey::as_bytes)]
+        #[br(try_map = |x: [u8; sect163k1::PubKey::size()]| sect163k1::PubKey::try_from(&x[..]))]
         ecc_pub_key: sect163k1::PubKey,
     },
+    #[brw(magic(b"\x08\x00"))]
     IdentityVerifyResponse {
+        #[bw(map = sect163k1::SharedSecret::as_bytes)]
+        #[br(try_map = |x: [u8; sect163k1::SharedSecret::size()]| sect163k1::SharedSecret::try_from(&x[..]))]
         ecc_shared_secret: sect163k1::SharedSecret,
     },
 }
 
 impl PICoPacket {
-    fn type_id(&self) -> u8 {
-        match self {
-            PICoPacket::None => 0,
-            PICoPacket::InfoRequest => 1,
-            PICoPacket::InfoResponse {
-                version: _,
-                status: _,
-            } => 2,
-            PICoPacket::RandomDataRequest => 3,
-            PICoPacket::RandomDataResponse { random_data: _ } => 4,
-            PICoPacket::IdentityConfigureRequest { ecc_priv_key: _ } => 5,
-            PICoPacket::IdentityConfigureResponse {
-                status: _,
-                ecc_priv_key: _,
-            } => 6,
-            PICoPacket::IdentityVerifyRequest { ecc_pub_key: _ } => 7,
-            PICoPacket::IdentityVerifyResponse {
-                ecc_shared_secret: _,
-            } => 8,
-        }
-    }
-
-    #[must_use]
-    pub fn buffer_size(&self) -> usize {
-        // [type, reserved, DATA_SIZE]
-        2 + match self {
-            PICoPacket::None | PICoPacket::InfoRequest | PICoPacket::RandomDataRequest => 0,
-            PICoPacket::InfoResponse {
-                version: _,
-                status: _,
-            } => 4 + PICoInfoResponseStatus::size(),
-            PICoPacket::RandomDataResponse { random_data: _ } => RAND_DATA_BLOCK_SIZE,
-            PICoPacket::IdentityConfigureRequest { ecc_priv_key: _ } => sect163k1::PrivKey::size(),
-            PICoPacket::IdentityConfigureResponse {
-                status: _,
-                ecc_priv_key: _,
-            } => 2 + sect163k1::PrivKey::size(),
-            PICoPacket::IdentityVerifyRequest { ecc_pub_key: _ } => sect163k1::PubKey::size(),
-            PICoPacket::IdentityVerifyResponse {
-                ecc_shared_secret: _,
-            } => sect163k1::SharedSecret::size(),
-        }
-    }
-
     #[must_use]
     pub const fn max_buffer_size() -> usize {
         // [type, reserved, ECC_PUB_KEY_SIZE]
         1 + 1 + sect163k1::PubKey::size()
     }
 
-    /// Returns the memory representation of this packet in little-endian byte order
+    /// Serialize the packet as a byte array
     #[must_use]
-    pub fn as_bytes(&self) -> [u8; Self::max_buffer_size()] {
+    pub fn to_bytes(&self) -> [u8; Self::max_buffer_size()] {
         let mut buf = [0u8; Self::max_buffer_size()];
-        buf[0] = self.type_id();
-        buf[1] = 0; // 1-byte reserved
-        match self {
-            PICoPacket::None | PICoPacket::InfoRequest | PICoPacket::RandomDataRequest => (), // No additional packing
-            PICoPacket::InfoResponse { version, status } => {
-                let ver = version.to_le_bytes();
-                buf[2..][..ver.len()].copy_from_slice(&ver);
-                let stat = status.value.to_le_bytes();
-                buf[2 + ver.len()..][..stat.len()].copy_from_slice(&stat);
-            }
-            PICoPacket::RandomDataResponse { random_data } => {
-                buf[2..][..random_data.len()].copy_from_slice(random_data.as_slice());
-            }
-            PICoPacket::IdentityConfigureRequest { ecc_priv_key } => {
-                let k = ecc_priv_key.as_bytes();
-                buf[2..][..k.len()].copy_from_slice(k);
-            }
-            PICoPacket::IdentityConfigureResponse {
-                status,
-                ecc_priv_key,
-            } => {
-                let status = status.to_le_bytes();
-                buf[2..][..status.len()].copy_from_slice(&status);
-                let k = ecc_priv_key.as_bytes();
-                buf[2 + status.len()..][..k.len()].copy_from_slice(k);
-            }
-            PICoPacket::IdentityVerifyRequest { ecc_pub_key } => {
-                let k = ecc_pub_key.as_bytes();
-                buf[2..][..k.len()].copy_from_slice(k);
-            }
-            PICoPacket::IdentityVerifyResponse { ecc_shared_secret } => {
-                let s = ecc_shared_secret.as_bytes();
-                buf[2..][..s.len()].copy_from_slice(s);
-            }
-        }
+        let mut cursor = Cursor::new(&mut buf[..]);
+        let _ = self.write(&mut cursor); // Nothing should be fallible here
         buf
     }
 
-    /// Attempt to parse a [`PICoPacket`] from bytes in little-endian byte order
+    /// Serialize the packet as a byte vector
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        let _ = self.write(&mut cursor); // Nothing should be fallible here
+        cursor.into_inner()
+    }
+
+    /// Parse a [`PICoPacket`] from bytes
     ///
     /// # Errors
     /// Returns an [`enum@Error`] if parsing errors occur
     pub fn from_bytes(buffer: &[u8]) -> Result<Self> {
-        let payload = &buffer[2..];
-        match buffer.first() {
-            Some(0) => Ok(PICoPacket::None),
-
-            Some(1) => Ok(PICoPacket::InfoRequest),
-
-            // C prefers the first variant (flags) here. TODO: both
-            Some(2) => match (payload.get(0..=3), payload.get(4..=7)) {
-                (Some(version), Some(status)) => Ok(PICoPacket::InfoResponse {
-                    version: u32::from_le_bytes(version.try_into()?),
-                    status: PICoInfoResponseStatus {
-                        value: u32::from_le_bytes(status.try_into()?),
-                    },
-                }),
-                _ => Err(Error::InvalidPayloadLength(PacketName::InfoResponse)),
-            },
-
-            Some(3) => Ok(Self::RandomDataRequest),
-
-            Some(4) => match payload.get(0..RAND_DATA_BLOCK_SIZE) {
-                Some(random_data) => Ok(PICoPacket::RandomDataResponse {
-                    random_data: random_data.try_into()?,
-                }),
-                None => Err(Error::InvalidPayloadLength(PacketName::RandomDataResponse)),
-            },
-
-            Some(5) => match payload.get(0..sect163k1::PrivKey::size()) {
-                Some(ecc_priv_key) => Ok(Self::IdentityConfigureRequest {
-                    ecc_priv_key: ecc_priv_key.try_into()?,
-                }),
-                None => Err(Error::InvalidPayloadLength(
-                    PacketName::IdentityConfigureRequest,
-                )),
-            },
-
-            Some(6) => match (
-                payload.get(0..2),
-                payload.get(2..sect163k1::PrivKey::size() + 2),
-            ) {
-                (Some(status), Some(ecc_priv_key)) => Ok(Self::IdentityConfigureResponse {
-                    status: u16::from_le_bytes(status.try_into()?),
-                    ecc_priv_key: ecc_priv_key.try_into()?,
-                }),
-                (_, _) => Err(Error::InvalidPayloadLength(
-                    PacketName::IdentityConfigureResponse,
-                )),
-            },
-
-            Some(7) => match payload.get(0..sect163k1::PubKey::size()) {
-                Some(ecc_pub_key) => Ok(PICoPacket::IdentityVerifyRequest {
-                    ecc_pub_key: ecc_pub_key.try_into()?,
-                }),
-                None => Err(Error::InvalidPayloadLength(
-                    PacketName::IdentityVerifyRequest,
-                )),
-            },
-
-            Some(8) => match payload.get(0..sect163k1::SharedSecret::size()) {
-                Some(ecc_shared_secret) => Ok(PICoPacket::IdentityVerifyResponse {
-                    ecc_shared_secret: ecc_shared_secret.try_into()?,
-                }),
-                None => Err(Error::InvalidPayloadLength(
-                    PacketName::IdentityVerifyResponse,
-                )),
-            },
-
-            Some(t) => Err(Error::InvalidType(*t)),
-            None => Err(Error::Empty),
+        if buffer.is_empty() {
+            return Err(Error::Empty);
         }
+        let mut cursor = Cursor::new(buffer);
+        let packet = Self::read(&mut cursor).map_err(|e| Error::from_binrw(e, buffer[0]))?;
+        Ok(packet)
     }
 }
 
@@ -303,8 +192,7 @@ pub mod test {
     #[test]
     fn test_none() {
         let packet = PICoPacket::None;
-        assert_eq!(packet.buffer_size(), 2);
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -320,8 +208,7 @@ pub mod test {
     #[test]
     fn test_info_request() {
         let packet = PICoPacket::InfoRequest;
-        assert_eq!(packet.buffer_size(), 2);
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -342,7 +229,7 @@ pub mod test {
         let status = PICoInfoResponseStatus::configured();
         assert!(status.is_configured());
 
-        let status = PICoInfoResponseStatus { value: 0xFFFF_FFFE };
+        let status = PICoInfoResponseStatus { value: 0xFFFF_FF00 };
         assert!(!status.is_configured());
     }
 
@@ -352,8 +239,7 @@ pub mod test {
             version: 0xDEAD_BEEF,
             status: PICoInfoResponseStatus { value: 0 },
         };
-        assert_eq!(packet.buffer_size(), 2 + 4 + 4);
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -369,7 +255,7 @@ pub mod test {
             version: 0xDEAD_BEEF,
             status: PICoInfoResponseStatus::configured(),
         };
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -385,8 +271,7 @@ pub mod test {
     #[test]
     fn test_random_data_request() {
         let packet = PICoPacket::RandomDataRequest;
-        assert_eq!(packet.buffer_size(), 2);
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -406,8 +291,7 @@ pub mod test {
             25, 26, 27, 28, 29, 30, 31, 32,
         ];
         let packet = PICoPacket::RandomDataResponse { random_data };
-        assert_eq!(packet.buffer_size(), 2 + 32);
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -432,8 +316,7 @@ pub mod test {
         )
         .unwrap();
         let packet = PICoPacket::IdentityConfigureRequest { ecc_priv_key };
-        assert_eq!(packet.buffer_size(), 2 + sect163k1::PrivKey::size());
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -460,8 +343,7 @@ pub mod test {
             status: 0xBEEF,
             ecc_priv_key,
         };
-        assert_eq!(packet.buffer_size(), 2 + 2 + sect163k1::PrivKey::size());
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -487,8 +369,7 @@ pub mod test {
         )
         .unwrap();
         let packet = PICoPacket::IdentityVerifyRequest { ecc_pub_key };
-        assert_eq!(packet.buffer_size(), 2 + sect163k1::PubKey::size());
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
@@ -514,8 +395,7 @@ pub mod test {
         )
         .unwrap();
         let packet = PICoPacket::IdentityVerifyResponse { ecc_shared_secret };
-        assert_eq!(packet.buffer_size(), 2 + sect163k1::SharedSecret::size());
-        let buf = PICoPacket::as_bytes(&packet);
+        let buf = PICoPacket::to_bytes(&packet);
         assert_eq!(
             buf.as_slice(),
             &[
